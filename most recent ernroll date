@@ -1,0 +1,43 @@
+SELECT
+  most_recent_enrollment_date.organization_id
+  , most_recent_enrollment_date.organization_payment_plan_id
+  ,DATE_SUB(most_recent_enrollment_date.date_Most_Recent_Enrollment, INTERVAL 7 HOUR) as 'date (Most Recent Enrollment)'
+  ,bp.tier as 'Plan Type (Most Recent Enrollment)'
+FROM
+(
+SELECT opp.organization_id
+  ,pph_agg.organization_payment_plan_id
+  ,max(pph_agg.created_at) as date_Most_Recent_Enrollment
+FROM (
+SELECT
+        pph.organization_payment_plan_id
+        ,pph.created_at 
+        ,pph.plan_tier
+        ,pph.tier
+        ,if(@lastPlanTier <> pph.plan_tier or @lastid <> pph.organization_payment_plan_id,1,0) as newPlan
+        ,@lastid := pph.organization_payment_plan_id
+        ,@lastPlanTier := pph.plan_tier
+        FROM (SELECT pph.organization_payment_plan_id
+                     ,pph.created_at
+                     ,bp.tier
+                     ,case when pph.billing_plan_id in (26,43,56,100) THEN 'free'
+                        else 'paid'
+                      end plan_tier
+               FROM payment_plan_histories as pph
+               LEFT JOIN billing_plans bp on bp.id=pph.billing_plan_id
+             ) as pph
+         JOIN (select @lastid = 0,
+                      @lastPlanTier = 0
+             ) SQLVars  
+         LEFT JOIN organization_payment_plans opp on opp.id=pph.organization_payment_plan_id
+         LEFT JOIN organization_marketing_attributes oma on oma.organization_id=opp.organization_id
+      ORDER BY pph.organization_payment_plan_id,
+         pph.created_at asc
+      ) as pph_agg
+LEFT JOIN organization_payment_plans opp on opp.id=pph_agg.organization_payment_plan_id
+WHERE pph_agg.newPlan=1 and pph_agg.plan_tier='paid'
+GROUP BY opp.organization_id
+) as most_recent_enrollment_date
+LEFT JOIN payment_plan_histories as pph on most_recent_enrollment_date.organization_payment_plan_id=pph.organization_payment_plan_id and most_recent_enrollment_date.date_Most_Recent_Enrollment=pph.created_at
+LEFT JOIN billing_plans bp on bp.id=pph.billing_plan_id
+where pph.billing_plan_id not in (26,43,56,100)

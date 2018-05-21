@@ -1,0 +1,63 @@
+SELECT all_plans.*
+FROM(
+SELECT master_plans.*,max_createdDate.created_max, max_createdDate.dateMax
+	,@lastEnrolledDate := IF(@lastEnrolledDate = 0 AND @last_opp_id = 0, 'not', IF(@last_opp_id <> master_plans.organization_payment_plan_id, IF(master_plans.new_enrolled_date = 0, 0, master_plans.new_enrolled_date), IF(master_plans.new_enrolled_date = 0 AND master_plans.tier <> "free", @lastEnrolledDate, master_plans.new_enrolled_date))) AS original_enrollment_date
+	,@last_opp_id := master_plans.organization_payment_plan_id
+FROM(	SELECT plans.*
+		,IF(@lastPlanTier = "free" AND plans.tier <> "free" AND @lastid = plans.organization_payment_plan_id, plans.created_at, 0) AS new_enrolled_date	
+		,@lastid := plans.organization_payment_plan_id
+		,@lastPlanTier := plans.tier
+	FROM(	SELECT
+			pph.organization_payment_plan_id
+			,opp.organization_id
+			,pph.date
+			,pph.created_at
+-- 			,pphmax.created_at_max
+			,pph.billing_plan_id
+			,bp.tier
+			,pph.plan_type
+			,pph.sales_group
+			,pph.enrollment_specialist_id
+			,pph.sdr_id
+			,CASE	WHEN fixed_rate.flat_fee IS NOT NULL THEN fixed_rate.flat_fee/100
+				WHEN pph.billing_plan_id = 49 OR pph.billing_plan_id = 50 THEN "legacy"
+				WHEN pph.billing_plan_id < 26 AND pph.plan_type = "monthly" THEN pricing_legacy.rate_single_monthly/100
+				WHEN pph.billing_plan_id < 26 AND pph.plan_type = "6 months" THEN pricing_legacy.rate_single_6_months/100
+				WHEN pph.billing_plan_id < 26 AND pph.plan_type = "annual" THEN pricing_legacy.rate_single_annual/100
+				WHEN pph.billing_plan_id < 26 AND pph.plan_type IS NULL THEN pricing_legacy.rate_single_monthly/100
+				WHEN pph.billing_plan_id >= 26 AND pph.plan_type = "monthly" THEN pricing_current.rate_flat_monthly/100
+				WHEN pph.billing_plan_id >= 26 AND pph.plan_type = "6 months" THEN pricing_current.rate_flat_6_months/100
+				WHEN pph.billing_plan_id >= 26 AND pph.plan_type = "annual" THEN pricing_current.rate_flat_annual/100
+				WHEN pph.billing_plan_id >= 26 AND pph.plan_type IS NULL THEN pricing_current.rate_flat_monthly/100
+				ELSE NULL END AS pricing
+			,pph.additional_features
+		FROM (
+				SELECT 
+					organization_payment_plan_id
+					,DATE
+					,created_at
+					,billing_plan_id
+					,plan_type
+					,sales_group
+					,enrollment_specialist_id
+					,sdr_id
+					,additional_features
+					,CASE	WHEN billing_plan_id IN (26,43,56) THEN 'free'
+						ELSE 'paid' END plan_tier
+				FROM payment_plan_histories pph) AS pph
+		LEFT JOIN organization_payment_plans opp ON opp.id = pph.organization_payment_plan_id
+		LEFT JOIN billing_plans bp ON bp.id = pph.billing_plan_id
+		LEFT JOIN (SELECT payment_plan_id, flat_fee FROM payment_plan_exceptions) AS fixed_rate ON fixed_rate.payment_plan_id = opp.id
+		LEFT JOIN (SELECT id, rate_single_monthly, rate_single_6_months, rate_single_annual FROM billing_plans WHERE id < 26) AS pricing_legacy ON pricing_legacy.id = pph.billing_plan_id
+		LEFT JOIN (SELECT id, rate_flat_monthly, rate_flat_6_months, rate_flat_annual FROM billing_plans WHERE id >= 26) AS pricing_current ON pricing_current.id = pph.billing_plan_id
+		-- LEFT JOIN (SELECT organization_payment_plan_id, max(created_at) as created_at_max FROM payment_plan_histories WHERE billing_plan_id NOT IN (26,43,56) GROUP BY organization_payment_plan_id ) AS pphmax ON pphmax.organization_payment_plan_id = pph.organization_payment_plan_id
+		ORDER BY opp.organization_id, pph.created_at ASC
+	) AS plans
+)AS master_plans
+LEFT JOIN
+	(SELECT pph.organization_payment_plan_id, MAX(pph.date) AS dateMax, MAX(pph.created_at) AS created_max
+	FROM payment_plan_histories pph
+	WHERE pph.billing_plan_id NOT IN (26,43,56)
+	GROUP BY organization_payment_plan_id) AS max_createdDate ON max_createdDate.organization_payment_plan_id = master_plans.organization_payment_plan_id
+) AS all_plans
+WHERE all_plans.created_at = all_plans.created_max AND all_plans.date = all_plans.dateMax AND all_plans.tier <> "free"

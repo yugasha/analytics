@@ -1,0 +1,101 @@
+select distinct ob.organization_id,o.name,
+                                 ob.status,
+                                 	   opp.plan_type,bp.display_name,
+                                      date(date_sub(ob.updated_at,Interval 7 HOUR)) as 'updated_at',
+                                      os.trailing_seven,
+                                      date(date_sub(min(oc.created_at),Interval 7 HOUR)) as 'created_at',
+                                      fb.failed_Billings,
+                                      ob.id as 'bill_id',
+                                      ASP.amount as 'Plan_ASP',
+                                      act.status,
+                                      sc.stripe_id,
+                                      min(oc.error_message) as reason,
+                                      org_charg_items.charge_type,
+                                      date(date_sub(last_failed.last_failed_at, Interval 7 HOUR)) as 'last_failed_at',
+                                      ob3.bills_outstanding,
+                                      case when org_charg_items.failed_charge_amount>0 then 'failed' else 'paid' END AS payment_status,org_charg_items.failed_charge_amount
+                                      From organizational_bills ob 
+                                      Left Join organizational_charges oc on oc.organizational_bill_id=ob.id
+                                      LEFT JOIN organization_statistics os ON os.organization_id=oc.organization_id
+                                      left join organizations o on ob.organization_id=o.id
+                                      left join organization_payment_plans opp on ob.organization_id=opp.organization_id
+                                      left join billing_plans bp on opp.billing_plan_id=bp.id
+                                      left join
+                                      (
+                                      Select
+                                      organization_id,
+                                      COUNT( DISTINCT organizational_bill_id ) as 'failed_Billings', min(oc.created_at) as min_failed_date
+                                      From organizational_charges oc
+                                      where oc.kind='organization charge failure' and date(oc.created_at) >= CURRENT_DATE() - INTERVAL 6 MONTH
+                                      group by oc.organization_id
+                                      )as fb on fb.organization_id=ob.organization_id
+                                      Left JOin 
+                                      (select distinct  	oci.organization_id,oci.organizational_bill_id,sum(unit_price*number_of_units)/100 as failed_charge_amount,
+									 GROUP_CONCAT(distinct charge_type SEPARATOR ',') as charge_type
+									from organizational_charge_items oci where oci.status='charge failed'
+									Group By oci.organizational_bill_id) as org_charg_items on org_charg_items.organizational_bill_id=ob.id
+                                      left join
+                                      (
+                                      select distinct
+										acs.status,
+										acs.organization_id,
+										acs.updated_at
+										from account_statuses acs
+										inner join 
+										(select max(ac.updated_at)as max_date, ac.organization_id from account_statuses ac group by ac.organization_id) as ac2 on ac2.organization_id=acs.organization_id and max_date=acs.updated_at
+                                      )as act on act.organization_id=ob.organization_id
+                                      Left Join
+                                      ( select oc1.organization_id, min(oc1.created_at) as'last_failed_at'
+                                      from organizational_charges oc1
+                                      where oc1.kind='organization charge failure' and month(oc1.created_at) >= month(CURRENT_DATE())-1 and  year(oc1.created_at)=year(current_date())
+                                      group by oc1.organization_id                                 
+                                      )as last_failed on last_failed.organization_id=ob.organization_id
+                                     Left Join
+                                     (select 
+									organization_id, count(distinct ob.id)as bills_outstanding
+									from organizational_bills ob
+									where ob.status='failed'
+									group by organization_id) as ob3 on ob3.organization_id=ob.organization_id
+									
+	                            Left Join 
+                                     (SELECT asp.organization_id, asp.amount, asp.upsell_amt, SUM(asp.amount + asp.upsell_amt) AS total_asp
+FROM(
+	SELECT opp.organization_id, opp.billing_plan_id, opp.plan_type, bp.tier,
+	CASE WHEN bp.tier = 'free' THEN 'free'
+		WHEN bp.tier = 'trial' THEN 'trial'
+		WHEN fixed_rate.flat_fee IS NOT NULL THEN fixed_rate.flat_fee/100
+		WHEN opp.billing_plan_id < 26 AND opp.plan_type = 'month' THEN bp.rate_single_monthly/100
+		WHEN opp.billing_plan_id < 26 AND opp.plan_type = '6 months' THEN bp.rate_single_6_months/100
+		WHEN opp.billing_plan_id < 26 AND opp.plan_type = 'annual' THEN bp.rate_single_annual/100
+		WHEN opp.billing_plan_id > 26 AND opp.billing_plan_id <= 62 AND opp.plan_type = 'monthly' THEN bp.rate_flat_monthly/100
+		WHEN opp.billing_plan_id > 26 AND opp.billing_plan_id <= 62 AND opp.plan_type = '6 months' THEN bp.rate_flat_6_months/100
+		WHEN opp.billing_plan_id > 26 AND opp.billing_plan_id <= 62 AND opp.plan_type = 'annual' THEN bp.rate_flat_annual/100
+		WHEN opp.billing_plan_id > 62 AND opp.plan_type = 'monthly' THEN bp.rate_single_monthly/100
+		WHEN opp.billing_plan_id > 62 AND opp.plan_type = '6 months' THEN bp.rate_single_6_months/100
+		WHEN opp.billing_plan_id > 62 AND opp.plan_type = 'annual' THEN bp.rate_single_annual/100
+		ELSE 0 END AS amount,
+	CASE WHEN upsell.upsell_amt IS NOT NULL THEN upsell.upsell_amt
+	ELSE 0 END AS upsell_amt
+	FROM organization_payment_plans opp
+	LEFT JOIN billing_plans bp ON bp.id = opp.billing_plan_id
+	LEFT JOIN (SELECT payment_plan_id, flat_fee FROM payment_plan_exceptions) AS fixed_rate ON fixed_rate.payment_plan_id = opp.id
+	LEFT JOIN (SELECT upsell.organization_id, SUM(upsell.price/100) AS upsell_amt FROM
+			(SELECT bpf.organization_id, bpf.name, bpf.price
+			FROM billing_plan_features bpf
+			WHERE bpf.organization_id IS NOT NULL AND bpf.price > 0) AS upsell
+		LEFT JOIN (
+			SELECT opp.organization_id, bpf.billing_plan_id, bpf.name
+			FROM organization_payment_plans opp
+			LEFT JOIN billing_plan_features bpf ON bpf.billing_plan_id = opp.billing_plan_id) AS features ON features.organization_id = upsell.organization_id AND features.name = upsell.name
+		WHERE features.organization_id IS NULL
+		GROUP BY upsell.organization_id) AS upsell ON upsell.organization_id = opp.organization_id
+	WHERE opp.billing_plan_id NOT IN (26,43,56,100,101)
+) AS asp
+GROUP BY asp.organization_id ) as ASP on ASP.organization_id=ob.organization_id
+                                      LEFT JOIN stripe_customers sc ON sc.organization_id=ob.organization_id
+                                      WHERE oc.kind = 'organization charge failure' AND month(oc.created_at)=month(curdate()) AND
+                                      year(oc.created_at)=year(curdate()) AND ob.month=month(CURDATE())
+                                      group by ob.id, ob.organization_id
+                                      order By ob.organization_id						
+							
+						

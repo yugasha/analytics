@@ -1,0 +1,7 @@
+select distinct
+acs.status,
+acs.organization_id,
+acs.updated_at
+from account_statuses acs
+inner join 
+(select max(ac.updated_at)as max_date, ac.organization_id from account_statuses ac group by ac.organization_id) as ac2 on ac2.organization_id=acs.organization_id and max_date=acs.updated_at

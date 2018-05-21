@@ -1,0 +1,23 @@
+Select
+opp.organization_id
+   ,date(DATE_SUB(freeOrgs.max_freeDate, INTERVAL 7 HOUR)) as moveToFreeDate
+   ,last_billing_id
+   
+FROM payment_plan_histories as pph
+LEFT JOIN (SELECT  
+				organization_payment_plan_id
+				,max(created_at) as max_paidDate
+                                ,billing_plan_id as last_billing_id
+				FROM payment_plan_histories
+				WHERE billing_plan_id NOT IN (26,43,56,100)
+				GROUP BY organization_payment_plan_id
+				) as paidOrgs on paidOrgs.organization_payment_plan_id=pph.organization_payment_plan_id
+LEFT JOIN (SELECT  
+				organization_payment_plan_id
+				,max(created_at) as max_freeDate
+				FROM payment_plan_histories
+				WHERE billing_plan_id  IN (26,43,56,100)
+				GROUP BY organization_payment_plan_id
+				) as freeOrgs on freeOrgs.organization_payment_plan_id=pph.organization_payment_plan_id
+LEFT JOIN organization_payment_plans as opp on opp.id=pph.organization_payment_plan_id
+WHERE pph.billing_plan_id IN (26,43,56,100) AND freeOrgs.max_freeDate>paidOrgs.max_paidDate

@@ -1,0 +1,5 @@
+select csr.organization_id,count(sr.id) as "trailing_seven_created" from service_requests sr
+left join composite_service_requests csr
+on sr.composite_service_request_id=csr.id
+where  datediff(curdate(),date(sr.created_at))<=30
+group by csr.organization_id

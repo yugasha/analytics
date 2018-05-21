@@ -1,0 +1,5 @@
+select
+count(distinct a.id) as "call", a.lead_id
+from closeio_housecallpro.activities as a
+where a._type='Call' AND a.direction in ('outbound','outgoing')
+group by a.lead_id
