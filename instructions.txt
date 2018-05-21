@@ -1,0 +1,5 @@
+"git status" - shows files that were changed or added
+"git add <file name that changed/added>" OR "git add ." (to add everything)
+git commit -m "description of commit"
+"git push origin master"
+username - yugasha
